@@ -120,12 +120,9 @@ export default function Dashboard() {
                         <option value="OANDA:XAU_USD" className="bg-[#09090b] text-zinc-100 py-2">XAU/USD</option>
                         <option value="OANDA:EUR_USD" className="bg-[#09090b] text-zinc-100 py-2">EUR/USD</option>
                         <option value="OANDA:GBP_USD" className="bg-[#09090b] text-zinc-100 py-2">GBP/USD</option>
-                        <option value="OANDA:AUD_USD" className="bg-[#09090b] text-zinc-100 py-2">AUD/USD</option>
-                        <option value="OANDA:USD_JPY" className="bg-[#09090b] text-zinc-100 py-2">USD/JPY</option>
                       </optgroup>
                       <optgroup label="Crypto (Binance)" className="bg-[#09090b] text-zinc-500 font-bold">
                         <option value="BINANCE:BTCUSDT" className="bg-[#09090b] text-zinc-100 py-2">BTC/USDT</option>
-                        <option value="BINANCE:ETHUSDT" className="bg-[#09090b] text-zinc-100 py-2">ETH/USDT</option>
                       </optgroup>
                     </select>
                     <ChevronDown className="absolute right-0 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-500 pointer-events-none" />
