@@ -259,18 +259,29 @@ async function setupDataFeed() {
   
   try {
     const res = await fetch(`https://api.binance.com/api/v3/klines?symbol=${binanceProxy}&interval=1m&limit=100`);
+    if (!res.ok) throw new Error("Binance API returned " + res.status);
     const data = await res.json();
-    state.visualData = data.map(k => ({
-      time: generateTimestamp(new Date(k[0])),
-      open: parseFloat(k[1]),
-      high: parseFloat(k[2]),
-      low: parseFloat(k[3]),
-      close: parseFloat(k[4])
-    }));
-    state.currentPrice = state.visualData[state.visualData.length - 1].close;
-    state.lastMinute = Math.floor(Date.now() / 60000);
-    addLog('info', `Fetched ${state.visualData.length} historical candles.`);
-    evaluateStrategy(state.visualData, state.currentPrice);
+    if (Array.isArray(data)) {
+      state.visualData = data.map(k => ({
+        time: generateTimestamp(new Date(k[0])),
+        open: parseFloat(k[1]),
+        high: parseFloat(k[2]),
+        low: parseFloat(k[3]),
+        close: parseFloat(k[4])
+      }));
+      state.currentPrice = state.visualData[state.visualData.length - 1].close;
+      state.lastMinute = Math.floor(Date.now() / 60000);
+      addLog('info', `Fetched ${state.visualData.length} historical candles.`);
+      evaluateStrategy(state.visualData, state.currentPrice);
+    } else {
+      throw new Error("Invalid format");
+    }
+  } catch (err) {
+    addLog('error', `Could not fetch history (Proxy blocked), starting fresh. ${err.message}`);
+    state.visualData = [];
+  }
+
+  try {
     broadcastState();
 
     if (wsTrade) wsTrade.close();
