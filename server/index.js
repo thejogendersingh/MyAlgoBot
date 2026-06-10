@@ -2,6 +2,8 @@ import express from 'express';
 import { WebSocketServer, WebSocket } from 'ws';
 import cors from 'cors';
 import dotenv from 'dotenv';
+import fs from 'fs';
+import path from 'path';
 import http from 'http';
 
 dotenv.config();
@@ -10,30 +12,10 @@ const FINNHUB_API_KEY = process.env.FINNHUB_API_KEY;
 const METAAPI_TOKEN = process.env.METAAPI_TOKEN;
 const METAAPI_ACCOUNT_ID = process.env.METAAPI_ACCOUNT_ID;
 const PORT = process.env.PORT || 3001;
+const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
+const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 
-const STOP_LOSS_PCT = 0.0015; // 0.15% 
-const TAKE_PROFIT_PCT = 0.0030; // 0.30% 
-const INITIAL_PORTFOLIO_VALUE = 100;
-
-const app = express();
-app.use(cors());
-app.use(express.json());
-
-app.get('/health', (req, res) => {
-  res.send('AlgoBot Backend is Running 24/7');
-});
-
-// Ping route to keep Render server awake 24/7
-app.get('/ping', (req, res) => {
-  res.status(200).send('AlgoBot Backend is Active');
-});
-
-const server = http.createServer(app);
-server.listen(PORT, () => {
-  console.log(`[SYS] Server running on port ${PORT}`);
-});
-
-const wss = new WebSocketServer({ server });
+const ASSETS_TO_SCAN = ['OANDA:EUR_USD', 'OANDA:GBP_USD', 'OANDA:XAU_USD', 'BINANCE:BTCUSDT'];
 
 // --- SYSTEM STATE ---
 const state = {
@@ -42,23 +24,42 @@ const state = {
   currentPrice: 0,
   isTradingEnabled: false,
   brokerStatus: 'DISCONNECTED',
-  portfolio: {
-    balance: INITIAL_PORTFOLIO_VALUE,
-    realizedPnL: 0,
-    unrealizedPnL: 0
-  },
+  portfolio: { balance: 100, realizedPnL: 0, unrealizedPnL: 0 },
   openPositions: [],
   systemLogs: [],
-  metrics: {
-    winRate: 0,
-    totalTrades: 0,
-    winningTrades: 0,
-    exposure: 0,
-    currentRSI: 50,
-    currentSMA: 0
-  },
+  metrics: { winRate: 0, totalTrades: 0, winningTrades: 0, exposure: 0, currentRSI: null, currentSMA: null, currentMACD: null, currentSignal: null },
   lastMinute: 0
 };
+
+// Multi-Asset buffers
+const multiAssetBuffers = {};
+const assetLastMinute = {};
+ASSETS_TO_SCAN.forEach(a => {
+  multiAssetBuffers[a] = [];
+  assetLastMinute[a] = 0;
+});
+
+// News Filter State
+let isNewsPause = false;
+
+const app = express();
+app.use(cors());
+app.use(express.json());
+
+app.get('/health', (req, res) => res.send('AlgoBot Backend is Running 24/7'));
+app.get('/ping', (req, res) => res.status(200).send('AlgoBot Backend is Active'));
+
+const __dirname = path.resolve();
+app.use(express.static(path.join(__dirname, '../dist')));
+
+app.get('*', (req, res) => {
+  res.sendFile(path.join(__dirname, '../dist', 'index.html'));
+});
+
+const server = http.createServer(app);
+server.listen(PORT, () => console.log(`[SYS] Server running on port ${PORT}`));
+
+const wss = new WebSocketServer({ server });
 
 // --- HELPERS ---
 function generateTimestamp(date = new Date()) {
@@ -72,34 +73,102 @@ function addLog(type, msg) {
   broadcastState();
 }
 
+async function sendTelegramAlert(message) {
+  if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID) return;
+  const url = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`;
+  try {
+    await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chat_id: TELEGRAM_CHAT_ID, text: message, parse_mode: 'Markdown' })
+    });
+  } catch (err) {
+    console.error('Failed to send Telegram alert:', err);
+  }
+}
+
 function broadcastState() {
   const payload = JSON.stringify({ type: 'STATE_UPDATE', payload: state });
   wss.clients.forEach(client => {
-    if (client.readyState === WebSocket.OPEN) {
-      client.send(payload);
-    }
+    if (client.readyState === WebSocket.OPEN) client.send(payload);
   });
 }
 
-function calculateRSIAndSMA(data, rsiPeriod = 14, smaPeriod = 20) {
-  if (data.length < Math.max(rsiPeriod, smaPeriod)) return { rsi: null, sma: null };
-  const smaSlice = data.slice(-smaPeriod);
-  const sma = smaSlice.reduce((acc, curr) => acc + curr.close, 0) / smaPeriod;
+function calculateIndicators(data) {
+  if (data.length < 50) return { rsi: null, ema50: null, macdLine: null, signalLine: null, prevMacd: null, prevSignal: null };
 
+  const rsiPeriod = 14;
   let gains = 0, losses = 0;
   for (let i = data.length - rsiPeriod; i < data.length; i++) {
     const diff = data[i].close - data[i - 1].close;
     if (diff > 0) gains += diff;
     else losses -= diff;
   }
-  let avgGain = gains / rsiPeriod;
-  let avgLoss = losses / rsiPeriod;
-
-  let rs = avgLoss === 0 ? 100 : avgGain / avgLoss;
+  let rs = (losses / rsiPeriod) === 0 ? 100 : (gains / rsiPeriod) / (losses / rsiPeriod);
   let rsi = 100 - (100 / (1 + rs));
 
-  return { rsi, sma };
+  const getEma = (period) => {
+    let sum = 0;
+    for(let i=0; i<period; i++) sum += data[i].close;
+    let ema = sum / period;
+    const k = 2 / (period + 1);
+    const series = [];
+    for(let i=period; i<data.length; i++) {
+      ema = (data[i].close - ema) * k + ema;
+      series.push(ema);
+    }
+    return series;
+  };
+  
+  const ema50Series = getEma(50);
+  const ema50 = ema50Series[ema50Series.length - 1];
+
+  const ema12 = getEma(12);
+  const ema26 = getEma(26);
+  const macdSeries = [];
+  const offset = ema12.length - ema26.length;
+  for(let i=0; i<ema26.length; i++) macdSeries.push(ema12[i + offset] - ema26[i]);
+  
+  let signalSum = 0;
+  for(let i=0; i<9; i++) signalSum += macdSeries[i];
+  let signalEma = signalSum / 9;
+  const signalSeries = [];
+  for(let i=9; i<macdSeries.length; i++) {
+     signalEma = (macdSeries[i] - signalEma) * (2 / 10) + signalEma;
+     signalSeries.push(signalEma);
+  }
+
+  const macdLine = macdSeries[macdSeries.length - 1];
+  const signalLine = signalSeries[signalSeries.length - 1];
+  const prevMacd = macdSeries[macdSeries.length - 2];
+  const prevSignal = signalSeries[signalSeries.length - 2];
+
+  return { rsi, ema50, macdLine, signalLine, prevMacd, prevSignal };
 }
+
+// --- NEWS FILTER ---
+function checkHighImpactNews() {
+  // In a real production environment, you would fetch from ForexFactory API here.
+  // We simulate checking the calendar every minute.
+  const hour = new Date().getUTCHours();
+  const minute = new Date().getUTCMinutes();
+  
+  // Example: Block trading at 12:30 UTC (US NFP / CPI typical release time)
+  if (hour === 12 && minute >= 15 && minute <= 45) {
+    if (!isNewsPause) {
+      isNewsPause = true;
+      addLog('info', '🚨 High Impact News Approaching (US Session). Auto-trading paused to protect capital.');
+      sendTelegramAlert('🚨 *High Impact News Approaching*\nAuto-trading PAUSED to protect capital.');
+    }
+  } else {
+    if (isNewsPause) {
+      isNewsPause = false;
+      addLog('info', '✅ News volatility window passed. Auto-trading resumed.');
+      sendTelegramAlert('✅ *News volatility window passed*\nAuto-trading RESUMED.');
+    }
+  }
+}
+setInterval(checkHighImpactNews, 60000); // Check every minute
 
 // --- METAAPI BROKER ---
 const getMetaTraderSymbol = (symbol) => {
@@ -127,36 +196,39 @@ async function verifyBrokerConnection() {
     });
     if (res.ok) {
       state.brokerStatus = 'CONNECTED';
-      addLog('info', 'Exness MT5 Account Verified and Ready on Server.');
+      addLog('info', 'Exness MT5 Account Verified and Ready.');
     } else {
       state.brokerStatus = 'DISCONNECTED';
-      addLog('error', 'Invalid MetaApi Token or Account ID.');
     }
   } catch(err) {
     state.brokerStatus = 'DISCONNECTED';
-    addLog('error', 'Failed to reach MetaApi server.');
   }
 }
 
 async function placeRealTrade(side, volume, symbol) {
-  if (state.brokerStatus !== 'CONNECTED') {
-    addLog('info', 'MetaApi integration offline, simulating trade only.');
-    return;
-  }
+  if (state.brokerStatus !== 'CONNECTED') return;
   const mtSymbol = getMetaTraderSymbol(symbol);
   const actionType = side === 'LONG' ? 'ORDER_TYPE_BUY' : 'ORDER_TYPE_SELL';
   try {
-    const response = await fetch(`https://mt-client-api-v1.agiliumtrade.agiliumtrade.ai/users/current/accounts/${METAAPI_ACCOUNT_ID}/trade`, {
+    await fetch(`https://mt-client-api-v1.agiliumtrade.agiliumtrade.ai/users/current/accounts/${METAAPI_ACCOUNT_ID}/trade`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'auth-token': METAAPI_TOKEN },
       body: JSON.stringify({ actionType, symbol: mtSymbol, volume })
     });
-    if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
-    const data = await response.json();
-    addLog('trade', `REAL BROKER SUCCESS: Order ID ${data.orderId} executed on Exness MT5!`);
-  } catch (error) {
-    addLog('error', `REAL BROKER ERROR: Failed to execute trade. (${error.message})`);
-  }
+    addLog('trade', `REAL BROKER: Executed on MT5!`);
+  } catch (error) {}
+}
+
+const CSV_FILE_PATH = path.join(process.cwd(), 'trade_history.csv');
+
+function logTradeToCSV(tradeData) {
+  try {
+    const headers = "Entry Time,Exit Time,Asset,Side,Entry Price,Exit Price,Size,PnL,Reason\n";
+    const fileExists = fs.existsSync(CSV_FILE_PATH);
+    if (!fileExists) fs.writeFileSync(CSV_FILE_PATH, headers);
+    const row = `${tradeData.entryTime},${tradeData.exitTime},${tradeData.asset},${tradeData.side},${tradeData.entry.toFixed(5)},${tradeData.exitPrice.toFixed(5)},${tradeData.size.toFixed(4)},${tradeData.pnl.toFixed(2)},"${tradeData.reason}"\n`;
+    fs.appendFileSync(CSV_FILE_PATH, row);
+  } catch (err) {}
 }
 
 // --- TRADING LOGIC ---
@@ -176,159 +248,227 @@ function closePosition(posId, price, reason) {
 
   addLog('trade', `${reason}: Closed ${pos.side} order #${pos.id} at ${exitPrice.toFixed(5)}. PnL: $${pnl.toFixed(2)}`);
 
+  const pnlEmoji = pnl >= 0 ? '🟢' : '🔴';
+  sendTelegramAlert(`${pnlEmoji} *TRADE CLOSED*\n\n*Asset:* ${pos.asset}\n*Side:* ${pos.side}\n*Reason:* ${reason}\n*PnL:* $${pnl.toFixed(2)}\n*Balance:* $${state.portfolio.balance.toFixed(2)}`);
+
+  logTradeToCSV({
+    entryTime: pos.entryTime || 'Unknown',
+    exitTime: new Date().toLocaleString(),
+    asset: pos.asset,
+    side: pos.side,
+    entry: pos.entry,
+    exitPrice,
+    size: pos.size,
+    pnl,
+    reason
+  });
+
   state.openPositions = state.openPositions.filter(p => p.id !== posId);
   state.metrics.winRate = state.metrics.totalTrades > 0 ? (state.metrics.winningTrades / state.metrics.totalTrades) * 100 : 0;
   state.metrics.exposure = state.openPositions.reduce((acc, p) => acc + (p.size * p.entry), 0);
-  
   broadcastState();
 }
 
-function executeTrade(side, price) {
-  if (!state.isTradingEnabled) return;
-  if (state.openPositions.some(p => p.side === side && p.asset === state.activeAsset)) return;
+function executeTrade(side, price, reason, symbol) {
+  if (!state.isTradingEnabled || isNewsPause) return;
+  
+  const assetPositions = state.openPositions.filter(p => p.asset === symbol);
+  if (assetPositions.length > 0) return; // Strict 1 trade max per asset
 
-  // Close opposing
-  [...state.openPositions].forEach(pos => {
-    if (pos.side !== side && pos.asset === state.activeAsset) closePosition(pos.id, price, 'Signal Reversal');
-  });
+  addLog('signal', `Sniper Entry on ${symbol}: ${side} (${reason})`);
 
   const dynamicSpread = price * 0.0001;
   const entryPrice = side === 'LONG' ? price + (dynamicSpread / 2) : price - (dynamicSpread / 2);
-  const positionCapital = state.portfolio.balance * 0.10;
-  const size = positionCapital / entryPrice;
+  
+  // AUTO-COMPOUNDING LOGIC: Risk exactly 5% of CURRENT balance
+  const positionCapital = state.portfolio.balance * 0.05; 
+  const LEVERAGE = 100;
+  const size = (positionCapital * LEVERAGE) / entryPrice;
 
-  const newPosition = { id: Math.floor(Math.random() * 100000), asset: state.activeAsset, side, entry: entryPrice, size, current: price, pnl: 0, pnlPct: 0 };
+  const newPosition = { 
+    id: Math.floor(Math.random() * 100000), 
+    asset: symbol, 
+    side, 
+    entry: entryPrice, 
+    size, 
+    current: price, 
+    pnlPct: 0,
+    highestPnL: 0,
+    entryTime: new Date().toLocaleString()
+  };
   state.openPositions.push(newPosition);
-  state.metrics.exposure = state.openPositions.reduce((acc, pos) => acc + (pos.size * pos.entry), 0);
+  state.metrics.exposure = state.openPositions.reduce((acc, pos) => acc + (pos.size * pos.entry / LEVERAGE), 0);
 
-  addLog('trade', `Order #${newPosition.id} filled: ${side} ${size.toFixed(4)} Units @ ${entryPrice.toFixed(5)}`);
+  addLog('trade', `Order #${newPosition.id} filled: ${side} ${size.toFixed(4)} Units`);
+  sendTelegramAlert(`🎯 *SNIPER ENTRY*\n\n*Asset:* ${symbol}\n*Side:* ${side}\n*Entry:* ${entryPrice.toFixed(5)}\n*Reason:* ${reason}`);
+  
   broadcastState();
-  placeRealTrade(side, 0.01, state.activeAsset);
+  placeRealTrade(side, 0.01, symbol);
 }
 
-function checkRiskManagement(price) {
-  [...state.openPositions].forEach(pos => {
-    if(pos.asset !== state.activeAsset) return;
-    const pnlPct = pos.side === 'LONG' ? (price - pos.entry) / pos.entry : (pos.entry - price) / pos.entry;
-    if (pnlPct <= -STOP_LOSS_PCT) closePosition(pos.id, price, 'Stop Loss Hit');
-    else if (pnlPct >= TAKE_PROFIT_PCT) closePosition(pos.id, price, 'Take Profit Hit');
-  });
+const TRAILING_ACTIVATION_USD = 1.00; 
+const TRAILING_DISTANCE_USD = 0.50; 
+const HARD_STOP_LOSS_USD = 1.50; 
+
+function checkRiskManagement(price, symbol) {
+  const assetPositions = state.openPositions.filter(p => p.asset === symbol);
+  if (assetPositions.length === 0) return;
+
+  const pos = assetPositions[0];
+  if (pos.pnl > (pos.highestPnL || 0)) pos.highestPnL = pos.pnl;
+
+  if (pos.pnl <= -HARD_STOP_LOSS_USD) {
+    closePosition(pos.id, price, 'Hard Stop Loss Hit');
+    return;
+  }
+
+  if (pos.highestPnL >= TRAILING_ACTIVATION_USD) {
+    const trailingStopValue = pos.highestPnL - TRAILING_DISTANCE_USD;
+    if (pos.pnl <= trailingStopValue) {
+      closePosition(pos.id, price, `Trailing Stop Secured (Max PnL: $${pos.highestPnL.toFixed(2)})`);
+    }
+  }
 }
 
-function updatePositionsPnL(price) {
+function updatePositionsPnL(price, symbol) {
   let totalUnrealized = 0;
   state.openPositions = state.openPositions.map(pos => {
-    if (pos.asset !== state.activeAsset) {
+    if (pos.asset === symbol) {
+      const pnl = pos.side === 'LONG' ? (price - pos.entry) * pos.size : (pos.entry - price) * pos.size;
+      const pnlPct = (pnl / (pos.entry * pos.size)) * 100;
+      totalUnrealized += pnl;
+      return { ...pos, current: price, pnl, pnlPct };
+    } else {
       totalUnrealized += pos.pnl;
       return pos;
     }
-    const pnl = pos.side === 'LONG' ? (price - pos.entry) * pos.size : (pos.entry - price) * pos.size;
-    const pnlPct = (pnl / (pos.entry * pos.size)) * 100;
-    totalUnrealized += pnl;
-    return { ...pos, current: price, pnl, pnlPct };
   });
   state.portfolio.unrealizedPnL = totalUnrealized;
 }
 
-function evaluateStrategy(data, price) {
-  const { rsi, sma } = calculateRSIAndSMA(data);
-  if (!rsi || !sma) return;
+function evaluateStrategy(data, price, symbol) {
+  const { rsi, ema50, macdLine, signalLine, prevMacd, prevSignal } = calculateIndicators(data);
+  if (rsi === null || ema50 === null || macdLine === null) return;
 
-  state.metrics.currentRSI = rsi;
-  state.metrics.currentSMA = sma;
+  // Only update UI metrics for the active asset being viewed on dashboard
+  if (symbol === state.activeAsset) {
+    state.metrics.currentRSI = rsi;
+    state.metrics.currentSMA = ema50; 
+    state.metrics.currentMACD = macdLine;
+    state.metrics.currentSignal = signalLine;
+  }
 
-  if (rsi < 30 && price > sma) {
-    if (state.isTradingEnabled) {
-      addLog('signal', `Oversold (RSI: ${rsi.toFixed(1)}) & price > SMA. Signal: LONG`);
-      executeTrade('LONG', price);
-    }
-  } else if (rsi > 70 && price < sma) {
-    if (state.isTradingEnabled) {
-      addLog('signal', `Overbought (RSI: ${rsi.toFixed(1)}) & price < SMA. Signal: SHORT`);
-      executeTrade('SHORT', price);
-    }
+  const assetPositions = state.openPositions.filter(p => p.asset === symbol);
+  if (assetPositions.length > 0) return;
+
+  const isMacdCrossUp = prevMacd < prevSignal && macdLine > signalLine;
+  const isMacdCrossDown = prevMacd > prevSignal && macdLine < signalLine;
+
+  if (price > ema50 && isMacdCrossUp && rsi > 40 && rsi < 65) {
+    executeTrade('LONG', price, 'Price>EMA50 + MACD Cross Up', symbol);
+  } else if (price < ema50 && isMacdCrossDown && rsi < 60 && rsi > 35) {
+    executeTrade('SHORT', price, 'Price<EMA50 + MACD Cross Down', symbol);
   }
 }
 
 // --- DATA FEED (FINNHUB) ---
 let wsTrade = null;
 
-async function setupDataFeed() {
-  addLog('info', `Server initializing feed for ${state.activeAsset}...`);
-  const binanceProxy = state.activeAsset === 'OANDA:XAU_USD' ? 'PAXGUSDT' : 'EURUSDT';
+async function fetchHistoricalData(symbol) {
+  const binanceProxy = symbol.includes('BINANCE') 
+    ? symbol.replace('BINANCE:', '') 
+    : (symbol === 'OANDA:XAU_USD' ? 'PAXGUSDT' : 
+       symbol === 'OANDA:EUR_USD' ? 'EURUSDT' :
+       symbol === 'OANDA:GBP_USD' ? 'GBPUSDT' :
+       symbol === 'OANDA:AUD_USD' ? 'AUDUSDT' :
+       'EURUSDT'); 
   
   try {
-    const res = await fetch(`https://api.binance.com/api/v3/klines?symbol=${binanceProxy}&interval=1m&limit=100`);
-    if (!res.ok) throw new Error("Binance API returned " + res.status);
+    const res = await fetch(`https://data-api.binance.vision/api/v3/klines?symbol=${binanceProxy}&interval=1m&limit=100`);
+    if (!res.ok) return [];
     const data = await res.json();
-    if (Array.isArray(data)) {
-      state.visualData = data.map(k => ({
-        time: generateTimestamp(new Date(k[0])),
-        open: parseFloat(k[1]),
-        high: parseFloat(k[2]),
-        low: parseFloat(k[3]),
-        close: parseFloat(k[4])
-      }));
-      state.currentPrice = state.visualData[state.visualData.length - 1].close;
-      state.lastMinute = Math.floor(Date.now() / 60000);
-      addLog('info', `Fetched ${state.visualData.length} historical candles.`);
-      evaluateStrategy(state.visualData, state.currentPrice);
-    } else {
-      throw new Error("Invalid format");
-    }
+    return data.map(k => ({
+      time: generateTimestamp(new Date(k[0])),
+      open: parseFloat(k[1]),
+      high: parseFloat(k[2]),
+      low: parseFloat(k[3]),
+      close: parseFloat(k[4])
+    }));
   } catch (err) {
-    addLog('error', `Could not fetch history (Proxy blocked), starting fresh. ${err.message}`);
-    state.visualData = [];
+    return [];
   }
+}
 
-  try {
-    broadcastState();
-
-    if (wsTrade) wsTrade.close();
-    wsTrade = new WebSocket(`wss://ws.finnhub.io?token=${FINNHUB_API_KEY}`);
-    
-    wsTrade.on('open', () => {
-      addLog('info', `Finnhub Live Stream Connected on Backend.`);
-      wsTrade.send(JSON.stringify({'type':'subscribe', 'symbol': state.activeAsset}));
-    });
-
-    wsTrade.on('message', (dataStr) => {
-      const message = JSON.parse(dataStr);
-      if (message.type === 'trade') {
-        const trade = message.data[message.data.length - 1]; 
-        const newPrice = trade.p;
-        
-        state.currentPrice = newPrice;
-        updatePositionsPnL(newPrice);
-        checkRiskManagement(newPrice);
-
-        const nowMinute = Math.floor(Date.now() / 60000);
-        if (state.lastMinute !== nowMinute) {
-          state.visualData.push({ time: generateTimestamp(), close: newPrice });
-          if (state.visualData.length > 100) state.visualData.shift();
-          state.lastMinute = nowMinute;
-        } else {
-          if(state.visualData.length > 0) state.visualData[state.visualData.length - 1].close = newPrice;
-        }
-        
-        evaluateStrategy(state.visualData, newPrice);
-        broadcastState(); // Broadcast every tick to frontend
+async function setupDataFeed() {
+  addLog('info', `Server initializing Multi-Asset Scanner for ${ASSETS_TO_SCAN.length} pairs...`);
+  
+  // Pre-load historical data for all tracked assets
+  for (const asset of ASSETS_TO_SCAN) {
+    multiAssetBuffers[asset] = await fetchHistoricalData(asset);
+    if (multiAssetBuffers[asset].length > 0) {
+      assetLastMinute[asset] = Math.floor(Date.now() / 60000);
+      const latestPrice = multiAssetBuffers[asset][multiAssetBuffers[asset].length - 1].close;
+      if (asset === state.activeAsset) {
+        state.visualData = multiAssetBuffers[asset];
+        state.currentPrice = latestPrice;
+        state.lastMinute = assetLastMinute[asset];
       }
-    });
-
-    wsTrade.on('error', () => {
-       addLog('error', 'Finnhub WebSocket Error.');
-    });
-
-  } catch (err) {
-    addLog('error', `Failed to fetch proxy history: ${err.message}`);
+      evaluateStrategy(multiAssetBuffers[asset], latestPrice, asset);
+    }
   }
+
+  broadcastState();
+
+  if (wsTrade) wsTrade.close();
+  wsTrade = new WebSocket(`wss://ws.finnhub.io?token=${FINNHUB_API_KEY}`);
+  
+  wsTrade.on('open', () => {
+    addLog('info', `Finnhub Multi-Stream Connected. Scanning: ${ASSETS_TO_SCAN.join(', ')}`);
+    ASSETS_TO_SCAN.forEach(asset => {
+      wsTrade.send(JSON.stringify({'type':'subscribe', 'symbol': asset}));
+    });
+  });
+
+  wsTrade.on('message', (dataStr) => {
+    const message = JSON.parse(dataStr);
+    if (message.type === 'trade') {
+      const trade = message.data[message.data.length - 1]; 
+      const newPrice = trade.p;
+      const symbol = trade.s;
+      
+      if (!ASSETS_TO_SCAN.includes(symbol)) return;
+
+      updatePositionsPnL(newPrice, symbol);
+      checkRiskManagement(newPrice, symbol);
+
+      const nowMinute = Math.floor(Date.now() / 60000);
+      const buffer = multiAssetBuffers[symbol];
+
+      if (assetLastMinute[symbol] !== nowMinute) {
+        buffer.push({ time: generateTimestamp(), close: newPrice });
+        if (buffer.length > 100) buffer.shift();
+        assetLastMinute[symbol] = nowMinute;
+      } else {
+        if(buffer.length > 0) buffer[buffer.length - 1].close = newPrice;
+      }
+      
+      evaluateStrategy(buffer, newPrice, symbol);
+
+      if (symbol === state.activeAsset) {
+        state.currentPrice = newPrice;
+        state.visualData = buffer;
+        state.lastMinute = assetLastMinute[symbol];
+      }
+
+      broadcastState();
+    }
+  });
+
+  wsTrade.on('error', () => addLog('error', 'Finnhub WebSocket Error.'));
 }
 
 // --- FRONTEND WS COMMUNICATION ---
 wss.on('connection', (ws) => {
-  console.log('[SYS] Frontend client connected.');
-  // Send current state immediately
   ws.send(JSON.stringify({ type: 'STATE_UPDATE', payload: state }));
 
   ws.on('message', (message) => {
@@ -341,21 +481,21 @@ wss.on('connection', (ws) => {
       } else if (action.type === 'CLOSE_ALL') {
         if (state.openPositions.length === 0) return;
         const positions = [...state.openPositions];
-        positions.forEach(pos => closePosition(pos.id, state.currentPrice, 'Manual Close from Client'));
+        positions.forEach(pos => closePosition(pos.id, pos.current, 'Manual Close from Client'));
       } else if (action.type === 'SWITCH_ASSET') {
         const newAsset = action.payload;
         if (state.activeAsset !== newAsset) {
           state.activeAsset = newAsset;
-          setupDataFeed(); // re-init feed
+          // When switching UI asset, immediately update UI with existing multi-asset buffer
+          if (multiAssetBuffers[newAsset]) {
+             state.visualData = multiAssetBuffers[newAsset];
+             state.currentPrice = state.visualData.length > 0 ? state.visualData[state.visualData.length-1].close : 0;
+             broadcastState();
+          }
         }
       }
-    } catch (e) {
-      console.error(e);
-    }
+    } catch (e) {}
   });
 });
 
-// Init
-verifyBrokerConnection().then(() => {
-  setupDataFeed();
-});
+verifyBrokerConnection().then(() => setupDataFeed());

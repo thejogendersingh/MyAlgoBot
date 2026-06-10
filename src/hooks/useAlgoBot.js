@@ -1,8 +1,9 @@
 import { useState, useEffect, useRef } from 'react';
 
-const SERVER_WS_URL = import.meta.env.VITE_WS_URL || 'ws://localhost:3001';
+const SERVER_WS_URL = import.meta.env.VITE_WS_URL || (window.location.protocol === 'https:' ? 'wss://' : 'ws://') + window.location.host;
 
-export function useAlgoBot(activeAsset = 'OANDA:XAU_USD') {
+export function useAlgoBot() {
+  const [serverActiveAsset, setServerActiveAsset] = useState('OANDA:XAU_USD');
   const [visualData, setVisualData] = useState([]);
   const [currentPrice, setCurrentPrice] = useState(0);
   const [isTradingEnabled, setIsTradingEnabled] = useState(false);
@@ -11,56 +12,65 @@ export function useAlgoBot(activeAsset = 'OANDA:XAU_USD') {
   const [portfolio, setPortfolio] = useState({ balance: 100, realizedPnL: 0, unrealizedPnL: 0 });
   const [openPositions, setOpenPositions] = useState([]);
   const [systemLogs, setSystemLogs] = useState([]);
-  const [metrics, setMetrics] = useState({ winRate: 0, totalTrades: 0, winningTrades: 0, exposure: 0, currentRSI: 50, currentSMA: 0 });
+  const [metrics, setMetrics] = useState({ winRate: 0, totalTrades: 0, winningTrades: 0, exposure: 0, currentRSI: null, currentSMA: null });
 
   const wsClientRef = useRef(null);
 
   useEffect(() => {
-    if (wsClientRef.current && wsClientRef.current.readyState === WebSocket.OPEN) {
-      wsClientRef.current.send(JSON.stringify({ type: 'SWITCH_ASSET', payload: activeAsset }));
-    }
-  }, [activeAsset]);
+    let ws;
+    let reconnectTimeout;
 
-  useEffect(() => {
-    let ws = new WebSocket(SERVER_WS_URL);
-    wsClientRef.current = ws;
+    const connect = () => {
+      ws = new WebSocket(SERVER_WS_URL);
+      wsClientRef.current = ws;
 
-    ws.onopen = () => {
-      console.log('Connected to AlgoBot Backend Server');
-      ws.send(JSON.stringify({ type: 'SWITCH_ASSET', payload: activeAsset }));
-    };
+      ws.onopen = () => {
+        console.log('Connected to AlgoBot Backend Server');
+      };
 
-    ws.onmessage = (event) => {
-      try {
-        const msg = JSON.parse(event.data);
-        if (msg.type === 'STATE_UPDATE') {
-          const s = msg.payload;
-          setVisualData(s.visualData || []);
-          setCurrentPrice(s.currentPrice || 0);
-          setIsTradingEnabled(s.isTradingEnabled);
-          setBrokerStatus(s.brokerStatus);
-          setPortfolio(s.portfolio);
-          setOpenPositions(s.openPositions || []);
-          setSystemLogs(s.systemLogs || []);
-          setMetrics(s.metrics);
+      ws.onmessage = (event) => {
+        try {
+          const msg = JSON.parse(event.data);
+          if (msg.type === 'STATE_UPDATE') {
+            const s = msg.payload;
+            setServerActiveAsset(s.activeAsset);
+            setVisualData(s.visualData || []);
+            setCurrentPrice(s.currentPrice || 0);
+            setIsTradingEnabled(s.isTradingEnabled);
+            setBrokerStatus(s.brokerStatus);
+            setPortfolio(s.portfolio);
+            setOpenPositions(s.openPositions || []);
+            setSystemLogs(s.systemLogs || []);
+            setMetrics(s.metrics);
+          }
+        } catch (err) {
+          console.error('Error parsing backend WS message', err);
         }
-      } catch (err) {
-        console.error('Error parsing backend WS message', err);
-      }
+      };
+
+      ws.onclose = () => {
+        console.log('Disconnected from backend. Retrying in 5s...');
+        setBrokerStatus('DISCONNECTED');
+        reconnectTimeout = setTimeout(connect, 5000);
+      };
     };
 
-    ws.onclose = () => {
-      console.log('Disconnected from backend. Retrying in 5s...');
-      setBrokerStatus('DISCONNECTED');
-      setTimeout(() => {
-         // Auto-reconnect logic could go here
-      }, 5000);
-    };
+    connect();
 
     return () => {
-      if (wsClientRef.current) wsClientRef.current.close();
+      clearTimeout(reconnectTimeout);
+      if (ws) {
+        ws.onclose = null;
+        ws.close();
+      }
     };
   }, []);
+
+  const switchAsset = (newAsset) => {
+    if (wsClientRef.current && wsClientRef.current.readyState === WebSocket.OPEN) {
+      wsClientRef.current.send(JSON.stringify({ type: 'SWITCH_ASSET', payload: newAsset }));
+    }
+  };
 
   const toggleTrading = () => {
     if (wsClientRef.current && wsClientRef.current.readyState === WebSocket.OPEN) {
@@ -75,6 +85,7 @@ export function useAlgoBot(activeAsset = 'OANDA:XAU_USD') {
   };
 
   return {
+    activeAsset: serverActiveAsset,
     visualData,
     currentPrice,
     portfolio,
@@ -84,6 +95,7 @@ export function useAlgoBot(activeAsset = 'OANDA:XAU_USD') {
     isTradingEnabled,
     brokerStatus,
     toggleTrading,
-    closeAllPositions
+    closeAllPositions,
+    switchAsset
   };
 }

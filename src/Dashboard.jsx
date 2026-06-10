@@ -4,8 +4,7 @@ import { Play, Pause, Square, Activity, Terminal, BarChart2, ChevronDown } from 
 import { useAlgoBot } from './hooks/useAlgoBot';
 
 export default function Dashboard() {
-  const [activeAsset, setActiveAsset] = useState('OANDA:XAU_USD'); 
-  const { visualData, currentPrice, portfolio, openPositions, systemLogs, metrics, isTradingEnabled, brokerStatus, toggleTrading, closeAllPositions } = useAlgoBot(activeAsset);
+  const { activeAsset, visualData, currentPrice, portfolio, openPositions, systemLogs, metrics, isTradingEnabled, brokerStatus, toggleTrading, closeAllPositions, switchAsset } = useAlgoBot();
   const logsContainerRef = useRef(null);
 
   useEffect(() => {
@@ -73,6 +72,14 @@ export default function Dashboard() {
           </div>
 
           <div className="flex items-center gap-2 p-3 border-t lg:border-t-0 border-zinc-800/80 bg-[#050505]">
+            {isTradingEnabled && (
+              <div className="hidden sm:flex items-center gap-2 px-3 py-1 bg-emerald-500/10 border border-emerald-500/20 rounded-sm mr-2">
+                <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></div>
+                <span className="text-[10px] font-bold text-emerald-500 tracking-widest uppercase">
+                  TRADING {getPairName(activeAsset)}
+                </span>
+              </div>
+            )}
             <button 
               onClick={toggleTrading}
               className={`flex items-center justify-center gap-2 px-5 py-2 text-xs font-bold uppercase tracking-wider rounded-sm transition-colors border
@@ -106,7 +113,7 @@ export default function Dashboard() {
                   <div className="relative">
                     <select 
                       value={activeAsset}
-                      onChange={(e) => setActiveAsset(e.target.value)}
+                      onChange={(e) => switchAsset(e.target.value)}
                       className="appearance-none bg-transparent text-zinc-100 text-sm font-bold pl-2 pr-8 py-1 focus:outline-none cursor-pointer hover:text-white transition-colors"
                     >
                       <optgroup label="Forex (Direct Feed)" className="bg-[#09090b] text-zinc-500 font-bold">
@@ -260,9 +267,21 @@ export default function Dashboard() {
                 </span>
                 <div className="flex gap-4">
                   <div className="flex gap-2 items-center">
+                    <span className="text-[10px] uppercase font-bold text-zinc-600">EMA(50)</span>
+                    <span className="font-mono text-xs text-zinc-400">
+                      {metrics?.currentSMA != null ? Number(metrics.currentSMA).toFixed(5) : '--'}
+                    </span>
+                  </div>
+                  <div className="flex gap-2 items-center">
+                    <span className="text-[10px] uppercase font-bold text-zinc-600">MACD</span>
+                    <span className={`font-mono text-xs ${metrics?.currentMACD != null && metrics.currentMACD > (metrics.currentSignal || 0) ? 'text-emerald-500' : 'text-rose-500'}`}>
+                      {metrics?.currentMACD != null ? Number(metrics.currentMACD).toFixed(5) : '--'}
+                    </span>
+                  </div>
+                  <div className="flex gap-2 items-center">
                     <span className="text-[10px] uppercase font-bold text-zinc-600">RSI(14)</span>
-                    <span className={`font-mono text-xs ${metrics.currentRSI < 30 ? 'text-emerald-500' : metrics.currentRSI > 70 ? 'text-rose-500' : 'text-zinc-400'}`}>
-                      {metrics.currentRSI ? metrics.currentRSI.toFixed(1) : '--'}
+                    <span className={`font-mono text-xs ${metrics?.currentRSI != null && metrics.currentRSI < 30 ? 'text-emerald-500' : metrics?.currentRSI != null && metrics.currentRSI > 70 ? 'text-rose-500' : 'text-zinc-400'}`}>
+                      {metrics?.currentRSI != null ? Number(metrics.currentRSI).toFixed(1) : '--'}
                     </span>
                   </div>
                 </div>
