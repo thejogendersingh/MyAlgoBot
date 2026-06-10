@@ -76,7 +76,7 @@ export default function Dashboard() {
               <div className="hidden sm:flex items-center gap-2 px-3 py-1 bg-emerald-500/10 border border-emerald-500/20 rounded-sm mr-2">
                 <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></div>
                 <span className="text-[10px] font-bold text-emerald-500 tracking-widest uppercase">
-                  TRADING {getPairName(activeAsset)}
+                  SCANNING 4 ASSETS
                 </span>
               </div>
             )}
