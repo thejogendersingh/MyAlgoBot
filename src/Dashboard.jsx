@@ -245,8 +245,8 @@ export default function Dashboard() {
                           <td className="px-4 py-2.5 text-right text-zinc-400">
                             {pos.entry.toLocaleString(undefined, { minimumFractionDigits: pos.entry > 1000 ? 2 : 5 })}
                           </td>
-                          <td className={`px-4 py-2.5 text-right font-bold ${pos.pnl >= 0 ? 'text-emerald-500' : 'text-rose-500'}`}>
-                            {pos.pnl >= 0 ? '+' : ''}{pos.pnl.toFixed(2)}
+                          <td className={`px-4 py-2.5 text-right font-bold ${(pos.pnl || 0) >= 0 ? 'text-emerald-500' : 'text-rose-500'}`}>
+                            {(pos.pnl || 0) >= 0 ? '+' : ''}{(pos.pnl || 0).toFixed(2)}
                           </td>
                         </tr>
                       ))}

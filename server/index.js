@@ -53,7 +53,7 @@ app.get('/ping', (req, res) => res.status(200).send('AlgoBot Backend is Active')
 const __dirname = path.resolve();
 app.use(express.static(path.join(__dirname, '../dist')));
 
-app.get('*', (req, res) => {
+app.get(/(.*)/, (req, res) => {
   res.sendFile(path.join(__dirname, '../dist', 'index.html'));
 });
 
@@ -327,6 +327,7 @@ function executeTrade(side, price, reason, symbol) {
     entry: entryPrice, 
     size, 
     current: price, 
+    pnl: 0,
     pnlPct: 0,
     highestPnL: 0,
     entryTime: new Date().toLocaleString()
