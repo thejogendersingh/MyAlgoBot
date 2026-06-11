@@ -452,6 +452,10 @@ async function setupDataFeed() {
 
   broadcastState();
 
+  connectFinnhubWs();
+}
+
+function connectFinnhubWs() {
   if (wsTrade) wsTrade.close();
   wsTrade = new WebSocket(`wss://ws.finnhub.io?token=${FINNHUB_API_KEY}`);
   
@@ -497,7 +501,14 @@ async function setupDataFeed() {
     }
   });
 
-  wsTrade.on('error', () => addLog('error', 'Finnhub WebSocket Error.'));
+  wsTrade.on('error', () => {
+    addLog('error', 'Finnhub WebSocket Error.');
+  });
+
+  wsTrade.on('close', () => {
+    addLog('error', 'Finnhub WebSocket Disconnected. Reconnecting in 5s...');
+    setTimeout(connectFinnhubWs, 5000);
+  });
 }
 
 // --- FRONTEND WS COMMUNICATION ---

@@ -57,8 +57,16 @@ export function useAlgoBot() {
 
     connect();
 
+    const handleOnline = () => {
+      console.log('Network is online. Forcing WS reconnect...');
+      if (ws) ws.close(); // closing it will trigger onclose which will reconnect
+    };
+
+    window.addEventListener('online', handleOnline);
+
     return () => {
       clearTimeout(reconnectTimeout);
+      window.removeEventListener('online', handleOnline);
       if (ws) {
         ws.onclose = null;
         ws.close();
