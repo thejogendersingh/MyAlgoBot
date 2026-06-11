@@ -15,7 +15,7 @@ const PORT = process.env.PORT || 3001;
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 
-const ASSETS_TO_SCAN = ['OANDA:EUR_USD', 'OANDA:GBP_USD', 'OANDA:XAU_USD', 'BINANCE:BTCUSDT'];
+const ASSETS_TO_SCAN = ['OANDA:XAU_USD'];
 
 // --- SYSTEM STATE ---
 const state = {
@@ -323,9 +323,10 @@ function executeTrade(side, price, reason, symbol, delayMs = 0) {
   const dynamicSpread = price * 0.0001;
   const entryPrice = side === 'LONG' ? price + (dynamicSpread / 2) : price - (dynamicSpread / 2);
   
-  // ZERO HERO LOGIC: Risk exactly 2% of CURRENT balance per micro-trade (stacking up to 50 times)
-  const positionCapital = state.portfolio.balance * 0.02; 
-  const LEVERAGE = 100;
+  // MAX AGGRESSIVE LOGIC: Risk 1.5% balance per trade, stacking 50 times = 75% margin used.
+  // Using 500x leverage ensures massive lot sizes, making tiny price movements highly profitable.
+  const positionCapital = state.portfolio.balance * 0.015; 
+  const LEVERAGE = 500;
   const size = (positionCapital * LEVERAGE) / entryPrice;
 
   const newPosition = { 
@@ -363,10 +364,10 @@ function checkRiskManagement(price, symbol) {
   // Calculate total PnL of the entire cluster
   const totalUnrealizedPnL = assetPositions.reduce((sum, pos) => sum + (pos.pnl || 0), 0);
 
-  // ZERO HERO GLOBAL TAKE PROFIT: Close all if combined profit >= $3.00
-  if (totalUnrealizedPnL >= 3.00) {
+  // ZERO HERO GLOBAL TAKE PROFIT: Close all if combined profit >= $4.00
+  if (totalUnrealizedPnL >= 4.00) {
     const positionsToClose = [...assetPositions];
-    positionsToClose.forEach(pos => closePosition(pos.id, price, 'Zero Hero Global TP Hit (+$3.00)'));
+    positionsToClose.forEach(pos => closePosition(pos.id, price, 'Aggressive Global TP Hit (+$4.00)'));
   }
 }
 
