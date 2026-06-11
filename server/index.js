@@ -313,6 +313,13 @@ function closePosition(posId, price, reason) {
 }
 
 setInterval(() => {
+  if (state.portfolio.balance <= 0) {
+    state.portfolio.balance = 100;
+    state.portfolio.realizedPnL = 0;
+    state.portfolio.unrealizedPnL = 0;
+    addLog('info', 'Account Balance dropped below zero! Auto-reset to $100.00');
+    saveState();
+  }
   broadcastState();
 }, 1000);
 
