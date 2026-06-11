@@ -384,20 +384,11 @@ function checkRiskManagement(price, symbol) {
     return;
   }
 
-  // STRICT STOP LOSS: Close all if combined loss is -$15.00 or worse (Protects from Account Blown)
-  if (totalUnrealizedPnL <= -15.00) {
+  // STRICT STOP LOSS: Close all if combined loss is -$50.00 or worse (Protects from Account Blown)
+  if (totalUnrealizedPnL <= -50.00) {
     const positionsToClose = [...assetPositions];
-    positionsToClose.forEach(pos => closePosition(pos.id, price, 'Strict Stop Loss Hit (-$15.00)'));
+    positionsToClose.forEach(pos => closePosition(pos.id, price, 'Strict Stop Loss Hit (-$50.00)'));
     return;
-  }
-
-  // TIME-BASED EXIT: If a trade is open for more than 3 minutes, close it immediately at current PnL
-  const nowMs = Date.now();
-  const maxHoldTimeMs = 3 * 60 * 1000; // 3 minutes
-  const overduePositions = assetPositions.filter(pos => pos.timestampMs && (nowMs - pos.timestampMs > maxHoldTimeMs));
-  
-  if (overduePositions.length > 0) {
-    overduePositions.forEach(pos => closePosition(pos.id, price, 'Time Limit Exceeded (Closed after 3 mins)'));
   }
 }
 
