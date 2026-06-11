@@ -15,7 +15,7 @@ const PORT = process.env.PORT || 3001;
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 
-const ASSETS_TO_SCAN = ['OANDA:XAU_USD'];
+const ASSETS_TO_SCAN = ['OANDA:EUR_USD', 'OANDA:GBP_USD', 'OANDA:XAU_USD', 'BINANCE:BTCUSDT'];
 
 // --- SYSTEM STATE ---
 const state = {
@@ -307,27 +307,28 @@ setInterval(() => {
   broadcastState();
 }, 1000);
 
-
-function executeTrade(side, price, reason, symbol, delayMs = 0) {
+function executeTrade(side, price, reason, symbol) {
   if (!state.isTradingEnabled || isNewsPause) return;
   
   const assetPositions = state.openPositions.filter(p => p.asset === symbol);
-  const MAX_CONCURRENT_TRADES = 50;
-  if (assetPositions.length >= MAX_CONCURRENT_TRADES) return;
-
-  // Only log the first one to avoid spamming the UI terminal with 50 logs at once
-  if (delayMs === 0) {
-    addLog('signal', `Zero Hero Entry on ${symbol}: ${side} 50x Stack (${reason})`);
-  }
+  if (assetPositions.length >= 1) return; // Only 1 active trade allowed per pair
 
   const dynamicSpread = price * 0.0001;
   const entryPrice = side === 'LONG' ? price + (dynamicSpread / 2) : price - (dynamicSpread / 2);
   
-  // MAX AGGRESSIVE LOGIC: Risk 1.5% balance per trade, stacking 50 times = 75% margin used.
-  // Using 500x leverage ensures massive lot sizes, making tiny price movements highly profitable.
-  const positionCapital = state.portfolio.balance * 0.015; 
-  const LEVERAGE = 500;
+  // Single Massive Trade: Risking 75% of account balance
+  const positionCapital = state.portfolio.balance * 0.75; 
+  
+  // Leverage pair logic
+  let LEVERAGE = 500;
+  if (symbol.includes('BTC')) LEVERAGE = 50; // Crypto leverage
+  if (symbol.includes('XAU')) LEVERAGE = 500; // Gold leverage
+  if (symbol.includes('EUR') || symbol.includes('GBP')) LEVERAGE = 500; // Forex leverage
+  
   const size = (positionCapital * LEVERAGE) / entryPrice;
+  // Convert units to MT5 standard lots approximately (100,000 units = 1 lot)
+  let mt5Volume = parseFloat((size / 100000).toFixed(2));
+  if (mt5Volume < 0.01) mt5Volume = 0.01;
 
   const newPosition = { 
     id: Math.floor(Math.random() * 100000), 
@@ -344,17 +345,12 @@ function executeTrade(side, price, reason, symbol, delayMs = 0) {
   state.openPositions.push(newPosition);
   state.metrics.exposure = state.openPositions.reduce((acc, pos) => acc + (pos.size * pos.entry / LEVERAGE), 0);
 
-  if (delayMs === 0) {
-    addLog('trade', `Opened 50 Stack Orders for ${side}`);
-    sendTelegramAlert(`🎯 *ZERO HERO ENTRY*\n\n*Asset:* ${symbol}\n*Side:* ${side}\n*Stack:* 50 Trades\n*Entry:* ${entryPrice.toFixed(5)}`);
-  }
+  addLog('trade', `Opened Massive Order for ${side}: ${mt5Volume.toFixed(2)} Lots`);
+  sendTelegramAlert(`🎯 *SINGLE MASSIVE ENTRY*\n\n*Asset:* ${symbol}\n*Side:* ${side}\n*Lots:* ${mt5Volume}\n*Entry:* ${entryPrice.toFixed(5)}`);
   
   broadcastState();
 
-  // Stagger the real broker requests to prevent Finnhub/Node network stack from disconnecting
-  setTimeout(() => {
-    placeRealTrade(side, 0.01, symbol);
-  }, delayMs);
+  placeRealTrade(side, mt5Volume, symbol);
 }
 
 function checkRiskManagement(price, symbol) {
@@ -406,21 +402,12 @@ function evaluateStrategy(data, price, symbol) {
   }
 
   const assetPositions = state.openPositions.filter(p => p.asset === symbol);
-  const MAX_CONCURRENT_TRADES = 50;
-  if (assetPositions.length >= MAX_CONCURRENT_TRADES) return;
+  if (assetPositions.length >= 1) return; // Only 1 massive trade allowed per asset
 
   if (rsi < 20) {
-    // Fire 50 trades at once
-    const tradesToOpen = MAX_CONCURRENT_TRADES - assetPositions.length;
-    for (let i = 0; i < tradesToOpen; i++) {
-      executeTrade('LONG', price, 'Extreme Oversold (RSI < 20)', symbol, i * 50);
-    }
+    executeTrade('LONG', price, 'Extreme Oversold (RSI < 20)', symbol);
   } else if (rsi > 80) {
-    // Fire 50 trades at once
-    const tradesToOpen = MAX_CONCURRENT_TRADES - assetPositions.length;
-    for (let i = 0; i < tradesToOpen; i++) {
-      executeTrade('SHORT', price, 'Extreme Overbought (RSI > 80)', symbol, i * 50);
-    }
+    executeTrade('SHORT', price, 'Extreme Overbought (RSI > 80)', symbol);
   }
 }
 
