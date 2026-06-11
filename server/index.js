@@ -72,6 +72,15 @@ function loadState() {
       const parsed = JSON.parse(savedData);
       state.portfolio = parsed.portfolio || state.portfolio;
       state.metrics = parsed.metrics || state.metrics;
+      
+      // AUTO-RESET: If account blew up, reset it to $100 for paper trading
+      if (state.portfolio.balance <= 0) {
+        state.portfolio.balance = 100;
+        state.portfolio.unrealizedPnL = 0;
+        state.portfolio.realizedPnL = 0;
+        addLog('info', 'Account Balance was negative. Auto-reset to $100.00');
+      }
+      
       console.log('[SYS] Previous bot state loaded from bot_state.json');
     }
   } catch (err) {
