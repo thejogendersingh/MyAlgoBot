@@ -340,7 +340,8 @@ function executeTrade(side, price, reason, symbol) {
     pnl: 0,
     pnlPct: 0,
     highestPnL: 0,
-    entryTime: new Date().toLocaleString()
+    entryTime: new Date().toLocaleString(),
+    timestampMs: Date.now()
   };
   state.openPositions.push(newPosition);
   state.metrics.exposure = state.openPositions.reduce((acc, pos) => acc + (pos.size * pos.entry / LEVERAGE), 0);
@@ -364,6 +365,23 @@ function checkRiskManagement(price, symbol) {
   if (totalUnrealizedPnL >= 4.00) {
     const positionsToClose = [...assetPositions];
     positionsToClose.forEach(pos => closePosition(pos.id, price, 'Aggressive Global TP Hit (+$4.00)'));
+    return;
+  }
+
+  // STRICT STOP LOSS: Close all if combined loss is -$15.00 or worse (Protects from Account Blown)
+  if (totalUnrealizedPnL <= -15.00) {
+    const positionsToClose = [...assetPositions];
+    positionsToClose.forEach(pos => closePosition(pos.id, price, 'Strict Stop Loss Hit (-$15.00)'));
+    return;
+  }
+
+  // TIME-BASED EXIT: If a trade is open for more than 3 minutes, close it immediately at current PnL
+  const nowMs = Date.now();
+  const maxHoldTimeMs = 3 * 60 * 1000; // 3 minutes
+  const overduePositions = assetPositions.filter(pos => pos.timestampMs && (nowMs - pos.timestampMs > maxHoldTimeMs));
+  
+  if (overduePositions.length > 0) {
+    overduePositions.forEach(pos => closePosition(pos.id, price, 'Time Limit Exceeded (Closed after 3 mins)'));
   }
 }
 
