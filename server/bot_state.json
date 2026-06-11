@@ -1,17 +1,17 @@
 {
   "portfolio": {
-    "balance": 103.01057523773878,
-    "realizedPnL": 3.0105752377389123,
-    "unrealizedPnL": 3.5103997177531925
+    "balance": 100,
+    "realizedPnL": 0,
+    "unrealizedPnL": 0
   },
   "metrics": {
-    "winRate": 100,
-    "totalTrades": 50,
-    "winningTrades": 50,
+    "winRate": 0,
+    "totalTrades": 0,
+    "winningTrades": 0,
     "exposure": 0,
-    "currentRSI": 64.33612704014112,
-    "currentSMA": 4086.8031818917493,
-    "currentMACD": 1.9188809942584157,
-    "currentSignal": 1.9642677067237782
+    "currentRSI": null,
+    "currentSMA": null,
+    "currentMACD": null,
+    "currentSignal": null
   }
 }
