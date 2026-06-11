@@ -303,14 +303,22 @@ function closePosition(posId, price, reason) {
   saveState(); // Save state persistently on trade close
 }
 
-function executeTrade(side, price, reason, symbol) {
+setInterval(() => {
+  broadcastState();
+}, 1000);
+
+
+function executeTrade(side, price, reason, symbol, delayMs = 0) {
   if (!state.isTradingEnabled || isNewsPause) return;
   
   const assetPositions = state.openPositions.filter(p => p.asset === symbol);
   const MAX_CONCURRENT_TRADES = 50;
   if (assetPositions.length >= MAX_CONCURRENT_TRADES) return;
 
-  addLog('signal', `Sniper Entry on ${symbol}: ${side} (${reason})`);
+  // Only log the first one to avoid spamming the UI terminal with 50 logs at once
+  if (delayMs === 0) {
+    addLog('signal', `Zero Hero Entry on ${symbol}: ${side} 50x Stack (${reason})`);
+  }
 
   const dynamicSpread = price * 0.0001;
   const entryPrice = side === 'LONG' ? price + (dynamicSpread / 2) : price - (dynamicSpread / 2);
@@ -335,11 +343,17 @@ function executeTrade(side, price, reason, symbol) {
   state.openPositions.push(newPosition);
   state.metrics.exposure = state.openPositions.reduce((acc, pos) => acc + (pos.size * pos.entry / LEVERAGE), 0);
 
-  addLog('trade', `Order #${newPosition.id} filled: ${side} ${size.toFixed(4)} Units`);
-  sendTelegramAlert(`🎯 *SNIPER ENTRY*\n\n*Asset:* ${symbol}\n*Side:* ${side}\n*Entry:* ${entryPrice.toFixed(5)}\n*Reason:* ${reason}`);
+  if (delayMs === 0) {
+    addLog('trade', `Opened 50 Stack Orders for ${side}`);
+    sendTelegramAlert(`🎯 *ZERO HERO ENTRY*\n\n*Asset:* ${symbol}\n*Side:* ${side}\n*Stack:* 50 Trades\n*Entry:* ${entryPrice.toFixed(5)}`);
+  }
   
   broadcastState();
-  placeRealTrade(side, 0.01, symbol);
+
+  // Stagger the real broker requests to prevent Finnhub/Node network stack from disconnecting
+  setTimeout(() => {
+    placeRealTrade(side, 0.01, symbol);
+  }, delayMs);
 }
 
 function checkRiskManagement(price, symbol) {
@@ -349,10 +363,10 @@ function checkRiskManagement(price, symbol) {
   // Calculate total PnL of the entire cluster
   const totalUnrealizedPnL = assetPositions.reduce((sum, pos) => sum + (pos.pnl || 0), 0);
 
-  // ZERO HERO GLOBAL TAKE PROFIT: Close all if combined profit >= $0.20
-  if (totalUnrealizedPnL >= 0.20) {
+  // ZERO HERO GLOBAL TAKE PROFIT: Close all if combined profit >= $3.00
+  if (totalUnrealizedPnL >= 3.00) {
     const positionsToClose = [...assetPositions];
-    positionsToClose.forEach(pos => closePosition(pos.id, price, 'Zero Hero Global TP Hit (+$0.20)'));
+    positionsToClose.forEach(pos => closePosition(pos.id, price, 'Zero Hero Global TP Hit (+$3.00)'));
   }
 }
 
@@ -384,19 +398,28 @@ function evaluateStrategy(data, price, symbol) {
     state.metrics.currentSignal = signalLine;
   }
 
+  // SINGLE PAIR TRADING FEATURE: Only trade one pair at a time
+  const activeAssets = [...new Set(state.openPositions.map(p => p.asset))];
+  if (activeAssets.length > 0 && !activeAssets.includes(symbol)) {
+    return; // Ignore signals for this pair because another pair is currently active
+  }
+
   const assetPositions = state.openPositions.filter(p => p.asset === symbol);
   const MAX_CONCURRENT_TRADES = 50;
   if (assetPositions.length >= MAX_CONCURRENT_TRADES) return;
 
-  const now = Date.now();
-  if (state.lastTradeTime && now - state.lastTradeTime < 2000) return; // 2 seconds cooldown between grid entries
-
   if (rsi < 20) {
-    executeTrade('LONG', price, 'Extreme Oversold (RSI < 20)', symbol);
-    state.lastTradeTime = now;
+    // Fire 50 trades at once
+    const tradesToOpen = MAX_CONCURRENT_TRADES - assetPositions.length;
+    for (let i = 0; i < tradesToOpen; i++) {
+      executeTrade('LONG', price, 'Extreme Oversold (RSI < 20)', symbol, i * 50);
+    }
   } else if (rsi > 80) {
-    executeTrade('SHORT', price, 'Extreme Overbought (RSI > 80)', symbol);
-    state.lastTradeTime = now;
+    // Fire 50 trades at once
+    const tradesToOpen = MAX_CONCURRENT_TRADES - assetPositions.length;
+    for (let i = 0; i < tradesToOpen; i++) {
+      executeTrade('SHORT', price, 'Extreme Overbought (RSI > 80)', symbol, i * 50);
+    }
   }
 }
 
@@ -428,6 +451,9 @@ async function fetchHistoricalData(symbol) {
   }
 }
 
+let isWsConnected = false;
+let lastRestPoll = 0;
+
 async function setupDataFeed() {
   addLog('info', `Server initializing Multi-Asset Scanner for ${ASSETS_TO_SCAN.length} pairs...`);
   
@@ -456,6 +482,7 @@ function connectFinnhubWs() {
   wsTrade = new WebSocket(`wss://ws.finnhub.io?token=${FINNHUB_API_KEY}`);
   
   wsTrade.on('open', () => {
+    isWsConnected = true;
     addLog('info', `Finnhub Multi-Stream Connected. Scanning: ${ASSETS_TO_SCAN.join(', ')}`);
     ASSETS_TO_SCAN.forEach(asset => {
       wsTrade.send(JSON.stringify({'type':'subscribe', 'symbol': asset}));
@@ -489,7 +516,7 @@ function connectFinnhubWs() {
 
       if (symbol === state.activeAsset) {
         state.currentPrice = newPrice;
-        state.visualData = buffer;
+        state.visualData = [...buffer];
         state.lastMinute = assetLastMinute[symbol];
       }
 
@@ -497,11 +524,13 @@ function connectFinnhubWs() {
     }
   });
 
-  wsTrade.on('error', () => {
-    addLog('error', 'Finnhub WebSocket Error.');
+  wsTrade.on('error', (err) => {
+    addLog('error', `Finnhub WebSocket Error: ${err.message || JSON.stringify(err)}`);
+    console.error('Finnhub WS Error:', err);
   });
 
   wsTrade.on('close', () => {
+    isWsConnected = false;
     addLog('error', 'Finnhub WebSocket Disconnected. Reconnecting in 5s...');
     setTimeout(connectFinnhubWs, 5000);
   });
