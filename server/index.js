@@ -61,6 +61,38 @@ server.listen(PORT, () => console.log(`[SYS] Server running on port ${PORT}`));
 
 const wss = new WebSocketServer({ server });
 
+// --- SYSTEM STATE PERSISTENCE ---
+const STATE_FILE_PATH = path.join(process.cwd(), 'bot_state.json');
+
+function loadState() {
+  try {
+    if (fs.existsSync(STATE_FILE_PATH)) {
+      const savedData = fs.readFileSync(STATE_FILE_PATH, 'utf8');
+      const parsed = JSON.parse(savedData);
+      state.portfolio = parsed.portfolio || state.portfolio;
+      state.metrics = parsed.metrics || state.metrics;
+      console.log('[SYS] Previous bot state loaded from bot_state.json');
+    }
+  } catch (err) {
+    console.error('Failed to load bot state:', err);
+  }
+}
+
+function saveState() {
+  try {
+    const dataToSave = {
+      portfolio: state.portfolio,
+      metrics: state.metrics
+    };
+    fs.writeFileSync(STATE_FILE_PATH, JSON.stringify(dataToSave, null, 2));
+  } catch (err) {
+    console.error('Failed to save bot state:', err);
+  }
+}
+
+// Load previous state on startup
+loadState();
+
 // --- HELPERS ---
 function generateTimestamp(date = new Date()) {
   return date.toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
@@ -267,6 +299,7 @@ function closePosition(posId, price, reason) {
   state.metrics.winRate = state.metrics.totalTrades > 0 ? (state.metrics.winningTrades / state.metrics.totalTrades) * 100 : 0;
   state.metrics.exposure = state.openPositions.reduce((acc, p) => acc + (p.size * p.entry), 0);
   broadcastState();
+  saveState(); // Save state persistently on trade close
 }
 
 function executeTrade(side, price, reason, symbol) {
@@ -364,9 +397,9 @@ function evaluateStrategy(data, price, symbol) {
   const isMacdCrossUp = prevMacd < prevSignal && macdLine > signalLine;
   const isMacdCrossDown = prevMacd > prevSignal && macdLine < signalLine;
 
-  if (price > ema50 && isMacdCrossUp && rsi > 40 && rsi < 65) {
+  if (price > ema50 && isMacdCrossUp && rsi > 30 && rsi < 70) {
     executeTrade('LONG', price, 'Price>EMA50 + MACD Cross Up', symbol);
-  } else if (price < ema50 && isMacdCrossDown && rsi < 60 && rsi > 35) {
+  } else if (price < ema50 && isMacdCrossDown && rsi < 70 && rsi > 30) {
     executeTrade('SHORT', price, 'Price<EMA50 + MACD Cross Down', symbol);
   }
 }
@@ -498,4 +531,34 @@ wss.on('connection', (ws) => {
   });
 });
 
-verifyBrokerConnection().then(() => setupDataFeed());
+let lastTelegramUpdateId = 0;
+async function pollTelegramUpdates() {
+  if (!TELEGRAM_BOT_TOKEN) return;
+  try {
+    const res = await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getUpdates?offset=${lastTelegramUpdateId + 1}&timeout=30`);
+    if (res.ok) {
+      const data = await res.json();
+      if (data.ok && data.result.length > 0) {
+        for (const update of data.result) {
+          lastTelegramUpdateId = update.update_id;
+          if (update.message && update.message.text && update.message.chat.id.toString() === String(TELEGRAM_CHAT_ID)) {
+            const text = update.message.text.trim();
+            if (text === '/status') {
+              const openPosText = state.openPositions.length === 0 
+                ? 'No open trades.' 
+                : state.openPositions.map(p => `- ${p.side} ${p.asset} @ ${p.entry.toFixed(5)} (PnL: $${(p.pnl || 0).toFixed(2)})`).join('\n');
+              const msg = `📊 *BOT STATUS*\n\n*Balance:* $${state.portfolio.balance.toFixed(2)}\n*Realized PnL:* $${state.portfolio.realizedPnL.toFixed(2)}\n*Win Rate:* ${state.metrics.winRate.toFixed(1)}%\n\n*Open Trades:*\n${openPosText}`;
+              sendTelegramAlert(msg);
+            }
+          }
+        }
+      }
+    }
+  } catch (err) {}
+  setTimeout(pollTelegramUpdates, 3000);
+}
+
+verifyBrokerConnection().then(() => {
+  setupDataFeed();
+  pollTelegramUpdates();
+});
