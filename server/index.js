@@ -28,7 +28,8 @@ const state = {
   openPositions: [],
   systemLogs: [],
   metrics: { winRate: 0, totalTrades: 0, winningTrades: 0, exposure: 0, currentRSI: null, currentSMA: null, currentMACD: null, currentSignal: null },
-  lastMinute: 0
+  lastMinute: 0,
+  lastTradeTime: 0
 };
 
 // Multi-Asset buffers
@@ -306,15 +307,16 @@ function executeTrade(side, price, reason, symbol) {
   if (!state.isTradingEnabled || isNewsPause) return;
   
   const assetPositions = state.openPositions.filter(p => p.asset === symbol);
-  if (assetPositions.length > 0) return; // Strict 1 trade max per asset
+  const MAX_CONCURRENT_TRADES = 50;
+  if (assetPositions.length >= MAX_CONCURRENT_TRADES) return;
 
   addLog('signal', `Sniper Entry on ${symbol}: ${side} (${reason})`);
 
   const dynamicSpread = price * 0.0001;
   const entryPrice = side === 'LONG' ? price + (dynamicSpread / 2) : price - (dynamicSpread / 2);
   
-  // AUTO-COMPOUNDING LOGIC: Risk exactly 5% of CURRENT balance
-  const positionCapital = state.portfolio.balance * 0.05; 
+  // ZERO HERO LOGIC: Risk exactly 2% of CURRENT balance per micro-trade (stacking up to 50 times)
+  const positionCapital = state.portfolio.balance * 0.02; 
   const LEVERAGE = 100;
   const size = (positionCapital * LEVERAGE) / entryPrice;
 
@@ -339,27 +341,17 @@ function executeTrade(side, price, reason, symbol) {
   placeRealTrade(side, 0.01, symbol);
 }
 
-const TRAILING_ACTIVATION_USD = 1.00; 
-const TRAILING_DISTANCE_USD = 0.50; 
-const HARD_STOP_LOSS_USD = 1.50; 
-
 function checkRiskManagement(price, symbol) {
   const assetPositions = state.openPositions.filter(p => p.asset === symbol);
   if (assetPositions.length === 0) return;
 
-  const pos = assetPositions[0];
-  if (pos.pnl > (pos.highestPnL || 0)) pos.highestPnL = pos.pnl;
+  // Calculate total PnL of the entire cluster
+  const totalUnrealizedPnL = assetPositions.reduce((sum, pos) => sum + (pos.pnl || 0), 0);
 
-  if (pos.pnl <= -HARD_STOP_LOSS_USD) {
-    closePosition(pos.id, price, 'Hard Stop Loss Hit');
-    return;
-  }
-
-  if (pos.highestPnL >= TRAILING_ACTIVATION_USD) {
-    const trailingStopValue = pos.highestPnL - TRAILING_DISTANCE_USD;
-    if (pos.pnl <= trailingStopValue) {
-      closePosition(pos.id, price, `Trailing Stop Secured (Max PnL: $${pos.highestPnL.toFixed(2)})`);
-    }
+  // ZERO HERO GLOBAL TAKE PROFIT: Close all if combined profit >= $0.20
+  if (totalUnrealizedPnL >= 0.20) {
+    const positionsToClose = [...assetPositions];
+    positionsToClose.forEach(pos => closePosition(pos.id, price, 'Zero Hero Global TP Hit (+$0.20)'));
   }
 }
 
@@ -392,15 +384,18 @@ function evaluateStrategy(data, price, symbol) {
   }
 
   const assetPositions = state.openPositions.filter(p => p.asset === symbol);
-  if (assetPositions.length > 0) return;
+  const MAX_CONCURRENT_TRADES = 50;
+  if (assetPositions.length >= MAX_CONCURRENT_TRADES) return;
 
-  const isMacdCrossUp = prevMacd < prevSignal && macdLine > signalLine;
-  const isMacdCrossDown = prevMacd > prevSignal && macdLine < signalLine;
+  const now = Date.now();
+  if (state.lastTradeTime && now - state.lastTradeTime < 2000) return; // 2 seconds cooldown between grid entries
 
-  if (price > ema50 && isMacdCrossUp && rsi > 30 && rsi < 70) {
-    executeTrade('LONG', price, 'Price>EMA50 + MACD Cross Up', symbol);
-  } else if (price < ema50 && isMacdCrossDown && rsi < 70 && rsi > 30) {
-    executeTrade('SHORT', price, 'Price<EMA50 + MACD Cross Down', symbol);
+  if (rsi < 20) {
+    executeTrade('LONG', price, 'Extreme Oversold (RSI < 20)', symbol);
+    state.lastTradeTime = now;
+  } else if (rsi > 80) {
+    executeTrade('SHORT', price, 'Extreme Overbought (RSI > 80)', symbol);
+    state.lastTradeTime = now;
   }
 }
 
