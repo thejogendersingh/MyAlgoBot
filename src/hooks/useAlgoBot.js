@@ -92,6 +92,12 @@ export function useAlgoBot() {
     }
   };
 
+  const resetAccount = () => {
+    if (wsClientRef.current && wsClientRef.current.readyState === WebSocket.OPEN) {
+      wsClientRef.current.send(JSON.stringify({ type: 'RESET_ACCOUNT' }));
+    }
+  };
+
   return {
     activeAsset: serverActiveAsset,
     visualData,
@@ -104,6 +110,7 @@ export function useAlgoBot() {
     brokerStatus,
     toggleTrading,
     closeAllPositions,
+    resetAccount,
     switchAsset
   };
 }

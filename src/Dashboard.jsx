@@ -4,7 +4,7 @@ import { Play, Pause, Square, Activity, Terminal, BarChart2, ChevronDown } from 
 import { useAlgoBot } from './hooks/useAlgoBot';
 
 export default function Dashboard() {
-  const { activeAsset, visualData, currentPrice, portfolio, openPositions, systemLogs, metrics, isTradingEnabled, brokerStatus, toggleTrading, closeAllPositions, switchAsset } = useAlgoBot();
+  const { activeAsset, visualData, currentPrice, portfolio, openPositions, systemLogs, metrics, isTradingEnabled, brokerStatus, toggleTrading, closeAllPositions, resetAccount, switchAsset } = useAlgoBot();
   const logsContainerRef = useRef(null);
 
   useEffect(() => {
@@ -97,6 +97,12 @@ export default function Dashboard() {
             >
               <Square className="w-3.5 h-3.5 fill-current" />
               Close All
+            </button>
+            <button 
+              onClick={resetAccount}
+              className="flex items-center justify-center gap-2 px-4 py-2 text-xs font-bold uppercase tracking-wider rounded-sm bg-blue-500/10 text-blue-400 hover:bg-blue-500/20 border border-blue-500/30 transition-colors"
+            >
+              Reset Fund
             </button>
           </div>
         </header>

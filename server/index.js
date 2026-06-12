@@ -332,8 +332,8 @@ function executeTrade(side, price, reason, symbol) {
   const dynamicSpread = price * 0.0001;
   const entryPrice = side === 'LONG' ? price + (dynamicSpread / 2) : price - (dynamicSpread / 2);
   
-  // Single Massive Trade: Risking 75% of account balance
-  const positionCapital = state.portfolio.balance * 0.75; 
+  // Single Massive Trade: Risking 95% of account balance (Increased as requested)
+  const positionCapital = state.portfolio.balance * 0.95; 
   
   // Leverage pair logic
   let LEVERAGE = 500;
@@ -377,10 +377,10 @@ function checkRiskManagement(price, symbol) {
   // Calculate total PnL of the entire cluster
   const totalUnrealizedPnL = assetPositions.reduce((sum, pos) => sum + (pos.pnl || 0), 0);
 
-  // ZERO HERO GLOBAL TAKE PROFIT: Close all if combined profit >= $4.00
-  if (totalUnrealizedPnL >= 4.00) {
+  // ZERO HERO GLOBAL TAKE PROFIT: Close all if combined profit >= $3.49
+  if (totalUnrealizedPnL >= 3.49) {
     const positionsToClose = [...assetPositions];
-    positionsToClose.forEach(pos => closePosition(pos.id, price, 'Aggressive Global TP Hit (+$4.00)'));
+    positionsToClose.forEach(pos => closePosition(pos.id, price, 'Aggressive Global TP Hit (+$3.49)'));
     return;
   }
 
@@ -564,6 +564,17 @@ wss.on('connection', (ws) => {
         if (state.openPositions.length === 0) return;
         const positions = [...state.openPositions];
         positions.forEach(pos => closePosition(pos.id, pos.current, 'Manual Close from Client'));
+      } else if (action.type === 'RESET_ACCOUNT') {
+        state.portfolio.balance = 100;
+        state.portfolio.realizedPnL = 0;
+        state.portfolio.unrealizedPnL = 0;
+        if (state.openPositions.length > 0) {
+          const positions = [...state.openPositions];
+          positions.forEach(pos => closePosition(pos.id, pos.current, 'Manual Reset from Client'));
+        }
+        addLog('info', 'Account was manually reset to $100.00 from Dashboard.');
+        saveState();
+        broadcastState();
       } else if (action.type === 'SWITCH_ASSET') {
         const newAsset = action.payload;
         if (state.activeAsset !== newAsset) {
